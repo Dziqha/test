@@ -106,93 +106,98 @@ jobs:
           PREV_TAG=$(git tag --sort=-creatordate | sed -n 2p)
           
           # Debug: Show what we're working with
-          echo "Previous tag: $PREV_TAG"
-          echo "Current tag: ${{ steps.bump.outputs.new_tag }}"
+          echo "Previous tag: '$PREV_TAG'"
+          echo "Current tag: '${{ steps.bump.outputs.new_tag }}'"
           
-          # Get unique contributors since last release
-          if [ -n "$PREV_TAG" ]; then
+          # Get contributors - simplified approach
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "${{ steps.bump.outputs.new_tag }}" ]; then
             echo "Getting commits from $PREV_TAG to HEAD"
-            git log $PREV_TAG..HEAD --format='%ae|%an' > /tmp/commits_debug.txt
-            AUTHORS=$(cat /tmp/commits_debug.txt | sort -u)
+            COMMIT_RANGE="$PREV_TAG..HEAD"
           else
-            echo "Getting all commits (no previous tag)"
-            git log --format='%ae|%an' > /tmp/commits_debug.txt
-            AUTHORS=$(cat /tmp/commits_debug.txt | sort -u)
+            echo "Getting all commits (no previous tag or same tag)"
+            COMMIT_RANGE="HEAD"
           fi
-
-          echo "Debug - All commits:"
-          cat /tmp/commits_debug.txt
-          echo "Debug - Unique authors:"
-          echo "$AUTHORS"
-
+          
+          # Get unique authors with simpler format
+          git log $COMMIT_RANGE --pretty=format:"%ae|%an" > /tmp/authors.txt
+          
+          echo "=== Debug: Raw author data ==="
+          cat /tmp/authors.txt
+          echo "=== End raw data ==="
+          
+          # Remove duplicates
+          sort -u /tmp/authors.txt > /tmp/unique_authors.txt
+          
+          echo "=== Debug: Unique authors ==="
+          cat /tmp/unique_authors.txt
+          echo "=== End unique authors ==="
+          
+          # Count lines to see if we have any authors
+          AUTHOR_COUNT=$(cat /tmp/unique_authors.txt | wc -l)
+          echo "Found $AUTHOR_COUNT unique authors"
+          
           CONTRIBUTORS=""
           CONTRIBUTOR_COUNT=0
           
-          # Process each author
-          echo "$AUTHORS" | while IFS="|" read -r EMAIL NAME; do
-            # Skip empty lines
-            [ -z "$EMAIL" ] && [ -z "$NAME" ] && continue
+          # Process each unique author
+          while IFS='|' read -r EMAIL NAME; do
+            # Skip truly empty lines
+            if [ -z "$EMAIL" ] && [ -z "$NAME" ]; then
+              echo "Skipping empty line"
+              continue
+            fi
             
-            echo "Processing: EMAIL='$EMAIL' NAME='$NAME'"
+            echo "Processing author: EMAIL='$EMAIL', NAME='$NAME'"
             
-            # Try to get GitHub username from email
-            if [ -n "$EMAIL" ]; then
-              USER=$(curl -s -H "Authorization: token $GH_TOKEN" \
-                "https://api.github.com/search/users?q=$EMAIL+in:email" | \
-                jq -r '.items[0].login // empty')
-              echo "GitHub user for $EMAIL: $USER"
+            # Try to get GitHub username from email (with timeout)
+            if [ -n "$EMAIL" ] && [ "$EMAIL" != "null" ]; then
+              echo "Looking up GitHub user for email: $EMAIL"
+              USER_JSON=$(timeout 10 curl -s -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/search/users?q=$(echo $EMAIL | sed 's/@/%40/g')+in:email" || echo '{"items":[]}')
+              USER=$(echo "$USER_JSON" | jq -r '.items[0].login // empty' 2>/dev/null || echo "")
+              echo "Found GitHub user: '$USER'"
             else
               USER=""
             fi
             
-            if [ -n "$USER" ]; then
-              CONTRIBUTORS+="- [@$USER](https://github.com/$USER)\n"
-            elif [ -n "$NAME" ]; then
-              CONTRIBUTORS+="- $NAME\n"
-            else
-              CONTRIBUTORS+="- $EMAIL\n"
-            fi
-            CONTRIBUTOR_COUNT=$((CONTRIBUTOR_COUNT + 1))
-          done
-          
-          # Since we're in a subshell above, let's redo this outside the while loop
-          CONTRIBUTORS=""
-          CONTRIBUTOR_COUNT=0
-          
-          while IFS="|" read -r EMAIL NAME; do
-            [ -z "$EMAIL" ] && [ -z "$NAME" ] && continue
-            
-            if [ -n "$EMAIL" ]; then
-              USER=$(curl -s -H "Authorization: token $GH_TOKEN" \
-                "https://api.github.com/search/users?q=$EMAIL+in:email" | \
-                jq -r '.items[0].login // empty')
-            else
-              USER=""
+            # Add to contributors list
+            if [ -n "$USER" ] && [ "$USER" != "null" ] && [ "$USER" != "empty" ]; then
+              CONTRIBUTORS="${CONTRIBUTORS}- [@$USER](https://github.com/$USER)\n"
+              echo "Added GitHub user: @$USER"
+            elif [ -n "$NAME" ] && [ "$NAME" != "null" ]; then
+              CONTRIBUTORS="${CONTRIBUTORS}- $NAME"
+              if [ -n "$EMAIL" ] && [ "$EMAIL" != "null" ]; then
+                CONTRIBUTORS="${CONTRIBUTORS} ($EMAIL)"
+              fi
+              CONTRIBUTORS="${CONTRIBUTORS}\n"
+              echo "Added by name: $NAME"
+            elif [ -n "$EMAIL" ] && [ "$EMAIL" != "null" ]; then
+              CONTRIBUTORS="${CONTRIBUTORS}- $EMAIL\n"
+              echo "Added by email: $EMAIL"
             fi
             
-            if [ -n "$USER" ]; then
-              CONTRIBUTORS+="- [@$USER](https://github.com/$USER)\n"
-            elif [ -n "$NAME" ]; then
-              CONTRIBUTORS+="- $NAME ($EMAIL)\n"
-            else
-              CONTRIBUTORS+="- $EMAIL\n"
-            fi
             CONTRIBUTOR_COUNT=$((CONTRIBUTOR_COUNT + 1))
-          done <<< "$AUTHORS"
-
-          # Add contributors section if we found any
-          if [ $CONTRIBUTOR_COUNT -gt 0 ]; then
-            echo "" >> changelog.txt
-            echo "👥 Contributors" >> changelog.txt
-            echo "" >> changelog.txt
+            
+          done < /tmp/unique_authors.txt
+          
+          echo "=== Final Results ==="
+          echo "Contributor count: $CONTRIBUTOR_COUNT"
+          echo "Contributors list:"
+          echo -e "$CONTRIBUTORS"
+          
+          # Add contributors section
+          echo "" >> changelog.txt
+          echo "👥 Contributors" >> changelog.txt
+          echo "" >> changelog.txt
+          
+          if [ $CONTRIBUTOR_COUNT -gt 0 ] && [ -n "$CONTRIBUTORS" ]; then
             echo -e "$CONTRIBUTORS" >> changelog.txt
             echo "" >> changelog.txt
             echo "*Thank you to all $CONTRIBUTOR_COUNT contributor(s) who made this release possible!*" >> changelog.txt
           else
+            echo "- No contributors detected in this release" >> changelog.txt
             echo "" >> changelog.txt
-            echo "👥 Contributors" >> changelog.txt
-            echo "" >> changelog.txt
-            echo "- No contributors found (check debug logs)" >> changelog.txt
+            echo "*Debug info: Check Actions logs for details*" >> changelog.txt
           fi
 
       - name: Create GitHub Release
@@ -202,3 +207,4 @@ jobs:
           tag_name: ${{ steps.bump.outputs.new_tag }}
           name: Release ${{ steps.bump.outputs.new_tag }}
           body_path: changelog.txt
+

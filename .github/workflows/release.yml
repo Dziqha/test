@@ -90,8 +90,8 @@ jobs:
             echo "🧹 Updates" >> changelog.txt
             echo "- Release created without changelog file" >> changelog.txt
           fi
-
-          echo "🧹 Updates" >> changelog.txt
+          echo " " >> changelog.txt
+          echo " ### 🧹 Updates" >> changelog.txt
       
       - name: Generate changelog with PR info
         env:

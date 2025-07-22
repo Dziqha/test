@@ -91,7 +91,7 @@ jobs:
             echo "- Release created without changelog file" >> changelog.txt
           fi
           echo " " >> changelog.txt
-          echo " ### ✍️ Contributed by: " >> changelog.txt
+          echo " ### ✍️ Commits by: " >> changelog.txt
       
       - name: Generate changelog with PR info
         env:

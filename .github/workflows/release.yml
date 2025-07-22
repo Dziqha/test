@@ -78,24 +78,21 @@ jobs:
           git tag -f $MAJOR ${{ steps.bump.outputs.new_tag }}
           git push origin $MAJOR --force
 
-      - name: Generate changelog from .catalog.md
+      - name: Generate changelog from .changelog.md
         id: changelog
         run: |
-          CURR_TAG=${{ steps.bump.outputs.new_tag }}
-          # Check if .catalog.md exists and add its content
-
-          # Check if .catalog.md exists and add its content
-            if [ -f ".catalog.md" ]; then
-            echo "## 🏷️ Release $CURR_TAG" > temp_catalog.md
-            echo "" >> temp_catalog.md
-            cat .catalog.md >> temp_catalog.md
-            cat temp_catalog.md >> changelog.txt
+          # Check if .changelog.md exists and add its content
+          if [ -f ".changelog.md" ]; then
+            cat .changelog.md >> changelog.txt
+          else
+            echo "⚠️ No .changelog.md file found" >> changelog.txt
             echo "" >> changelog.txt
-            rm temp_catalog.md
-            fi
-                    
-          echo "🧹 Updates" >> changelog.txt
+            echo "🧹 Updates" >> changelog.txt
+            echo "- Release created without changelog file" >> changelog.txt
+          fi
 
+          echo "🧹 Updates" >> changelog.txt
+      
       - name: Generate changelog with PR info
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
@@ -131,7 +128,7 @@ jobs:
               echo "- $MESSAGE in $HASH" >> changelog.txt
             fi
           done <<< "$COMMITS"
-
+      
       - name: Resolve GitHub usernames
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
@@ -157,12 +154,13 @@ jobs:
             echo -e "$CONTRIBUTORS" >> changelog.txt
           fi
 
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.PERSONAL_TOKEN }}
           tag_name: ${{ steps.bump.outputs.new_tag }}
-          name: Release ${{ steps.bump.outputs.new_tag }}
+          name: TurboGo ${{ steps.bump.outputs.new_tag }}
           body_path: changelog.txt
 
       - name: Send Telegram Notification

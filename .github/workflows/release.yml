@@ -1,0 +1,204 @@
+name: TurboGo Auto Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  auto-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PERSONAL_TOKEN }}
+
+      - name: Set up Git
+        run: |
+          git config user.name "Dziqha"
+          git config user.email "abdurrohmanhaadziq@gmail.com"
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          TAG=$(git tag | sort -V | tail -n1)
+          if [ -z "$TAG" ]; then TAG="v0.0.0"; fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Detect version bump type
+        id: version_type
+        run: |
+          MSG=$(git log -1 --pretty=%B)
+          if echo "$MSG" | grep -q "BREAKING CHANGE"; then
+            echo "type=major" >> $GITHUB_OUTPUT
+          elif echo "$MSG" | grep -q "^feat!:" || echo "$MSG" | grep -q "^feat.*!"; then
+            echo "type=major" >> $GITHUB_OUTPUT
+          elif echo "$MSG" | grep -q "^feat:"; then
+            echo "type=minor" >> $GITHUB_OUTPUT
+          elif echo "$MSG" | grep -q "^fix:"; then
+            echo "type=patch" >> $GITHUB_OUTPUT
+          else
+            echo "type=patch" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump version (safe fallback)
+        id: bump
+        run: |
+          OLD=${{ steps.get_tag.outputs.tag }}
+          OLD=${OLD#v}
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$OLD"
+          [ -z "$MAJOR" ] && MAJOR=0
+          [ -z "$MINOR" ] && MINOR=0
+          [ -z "$PATCH" ] && PATCH=0
+
+          TYPE=${{ steps.version_type.outputs.type }}
+          if [ "$TYPE" = "major" ]; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif [ "$TYPE" = "minor" ]; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create and push new tag
+        run: |
+          git tag ${{ steps.bump.outputs.new_tag }}
+          git push origin ${{ steps.bump.outputs.new_tag }}
+
+      - name: Push major alias tag
+        run: |
+          MAJOR=$(echo "${{ steps.bump.outputs.new_tag }}" | cut -d '.' -f1)
+          git tag -f $MAJOR ${{ steps.bump.outputs.new_tag }}
+          git push origin $MAJOR --force
+
+      - name: Generate changelog from .catalog.md
+        id: changelog
+        run: |
+          CURR_TAG=${{ steps.bump.outputs.new_tag }}
+          
+          echo "${CURR_TAG}" > changelog.txt
+          echo "" >> changelog.txt
+          
+          # Check if .catalog.md exists and add its content
+          if [ -f ".catalog.md" ]; then
+            echo "📋 Release Notes" >> changelog.txt
+            echo "" >> changelog.txt
+            cat .catalog.md >> changelog.txt
+          else
+            echo "⚠️ No .catalog.md file found" >> changelog.txt
+            echo "" >> changelog.txt
+            echo "🧹 Updates" >> changelog.txt
+            echo "- Release created without catalog file" >> changelog.txt
+          fi
+
+      - name: Add contributors to changelog
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
+        run: |
+          # Get previous tag for comparison
+          PREV_TAG=$(git tag --sort=-creatordate | sed -n 2p)
+          
+          # Debug: Show what we're working with
+          echo "Previous tag: $PREV_TAG"
+          echo "Current tag: ${{ steps.bump.outputs.new_tag }}"
+          
+          # Get unique contributors since last release
+          if [ -n "$PREV_TAG" ]; then
+            echo "Getting commits from $PREV_TAG to HEAD"
+            git log $PREV_TAG..HEAD --format='%ae|%an' > /tmp/commits_debug.txt
+            AUTHORS=$(cat /tmp/commits_debug.txt | sort -u)
+          else
+            echo "Getting all commits (no previous tag)"
+            git log --format='%ae|%an' > /tmp/commits_debug.txt
+            AUTHORS=$(cat /tmp/commits_debug.txt | sort -u)
+          fi
+
+          echo "Debug - All commits:"
+          cat /tmp/commits_debug.txt
+          echo "Debug - Unique authors:"
+          echo "$AUTHORS"
+
+          CONTRIBUTORS=""
+          CONTRIBUTOR_COUNT=0
+          
+          # Process each author
+          echo "$AUTHORS" | while IFS="|" read -r EMAIL NAME; do
+            # Skip empty lines
+            [ -z "$EMAIL" ] && [ -z "$NAME" ] && continue
+            
+            echo "Processing: EMAIL='$EMAIL' NAME='$NAME'"
+            
+            # Try to get GitHub username from email
+            if [ -n "$EMAIL" ]; then
+              USER=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/search/users?q=$EMAIL+in:email" | \
+                jq -r '.items[0].login // empty')
+              echo "GitHub user for $EMAIL: $USER"
+            else
+              USER=""
+            fi
+            
+            if [ -n "$USER" ]; then
+              CONTRIBUTORS+="- [@$USER](https://github.com/$USER)\n"
+            elif [ -n "$NAME" ]; then
+              CONTRIBUTORS+="- $NAME\n"
+            else
+              CONTRIBUTORS+="- $EMAIL\n"
+            fi
+            CONTRIBUTOR_COUNT=$((CONTRIBUTOR_COUNT + 1))
+          done
+          
+          # Since we're in a subshell above, let's redo this outside the while loop
+          CONTRIBUTORS=""
+          CONTRIBUTOR_COUNT=0
+          
+          while IFS="|" read -r EMAIL NAME; do
+            [ -z "$EMAIL" ] && [ -z "$NAME" ] && continue
+            
+            if [ -n "$EMAIL" ]; then
+              USER=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/search/users?q=$EMAIL+in:email" | \
+                jq -r '.items[0].login // empty')
+            else
+              USER=""
+            fi
+            
+            if [ -n "$USER" ]; then
+              CONTRIBUTORS+="- [@$USER](https://github.com/$USER)\n"
+            elif [ -n "$NAME" ]; then
+              CONTRIBUTORS+="- $NAME ($EMAIL)\n"
+            else
+              CONTRIBUTORS+="- $EMAIL\n"
+            fi
+            CONTRIBUTOR_COUNT=$((CONTRIBUTOR_COUNT + 1))
+          done <<< "$AUTHORS"
+
+          # Add contributors section if we found any
+          if [ $CONTRIBUTOR_COUNT -gt 0 ]; then
+            echo "" >> changelog.txt
+            echo "👥 Contributors" >> changelog.txt
+            echo "" >> changelog.txt
+            echo -e "$CONTRIBUTORS" >> changelog.txt
+            echo "" >> changelog.txt
+            echo "*Thank you to all $CONTRIBUTOR_COUNT contributor(s) who made this release possible!*" >> changelog.txt
+          else
+            echo "" >> changelog.txt
+            echo "👥 Contributors" >> changelog.txt
+            echo "" >> changelog.txt
+            echo "- No contributors found (check debug logs)" >> changelog.txt
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.PERSONAL_TOKEN }}
+          tag_name: ${{ steps.bump.outputs.new_tag }}
+          name: Release ${{ steps.bump.outputs.new_tag }}
+          body_path: changelog.txt
